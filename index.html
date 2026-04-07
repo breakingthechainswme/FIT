@@ -4,6 +4,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="FIT Ignite">
+<meta name="mobile-web-app-capable" content="yes">
 <title>FitJournal</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script>
@@ -15,7 +19,8 @@ const supa = supabase.createClient(SUPA_URL, SUPA_KEY, {
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: true,
-    storage: window.localStorage
+    storage: window.localStorage,
+    storageKey: 'fitignite_auth'
   }
 });
 </script>
@@ -862,6 +867,11 @@ const supa = supabase.createClient(SUPA_URL, SUPA_KEY, {
     <div style="font-size:48px;margin-bottom:16px;">💪</div>
     <div style="font-size:26px;font-weight:600;color:var(--text);margin-bottom:8px;">Welcome to FIT Ignite</div>
     <div style="font-size:14px;color:var(--text2);margin-bottom:32px;line-height:1.6;">Enter your email and we'll send you a one-tap sign-in link. No password needed.</div>
+    <!-- PWA note: shown only when launched from home screen icon on iOS -->
+    <div id="auth-pwa-note" style="display:none;background:var(--accent-light);border-left:3px solid var(--accent);border-radius:0 8px 8px 0;padding:10px 14px;margin-bottom:20px;text-align:left;font-size:13px;color:var(--text2);line-height:1.5;">
+      <strong style="color:var(--text);display:block;margin-bottom:2px;">Sign in to continue</strong>
+      iPhone home screen apps have separate storage from Safari. Sign in once here and you'll stay logged in.
+    </div>
     <input type="email" id="auth-email-input" placeholder="you@email.com" style="width:100%;margin-bottom:12px;font-size:18px;padding:14px 16px;text-align:center;" autocomplete="email">
     <button onclick="sendMagicLink()" class="btn-primary" id="auth-send-btn" style="font-size:16px;">Send Sign-In Link</button>
     <div id="auth-error" style="margin-top:10px;font-size:13px;color:var(--danger);min-height:18px;"></div>
@@ -1786,19 +1796,29 @@ async function init() {
   document.querySelector('.tab-bar').style.display = 'none';
   document.getElementById('screen-today').style.display = 'none';
 
-  // Give Supabase time to detect token from URL hash (magic link redirect)
-  await new Promise(r => setTimeout(r, 300));
+  // Detect if running as iOS home screen PWA (standalone mode)
+  const isStandalone = window.navigator.standalone === true;
 
-  // First check for existing session explicitly (handles page reload/return visits)
+  // Give Supabase time to detect token from URL hash (magic link redirect)
+  // PWA context needs a bit more time on iOS
+  await new Promise(r => setTimeout(r, isStandalone ? 600 : 300));
+
+  // Check for existing session
   const { data: { session } } = await supa.auth.getSession();
   document.getElementById('screen-loading').style.display = 'none';
+
   if (session) {
     await handleAuthSession(session);
   } else {
+    // Show login screen — if PWA, add a helpful note so user knows why
     document.getElementById('screen-profile').style.display = 'flex';
+    if (isStandalone) {
+      const authNote = document.getElementById('auth-pwa-note');
+      if (authNote) authNote.style.display = 'block';
+    }
   }
 
-  // Also listen for future auth changes (magic link redirects, sign out)
+  // Listen for future auth changes (magic link redirects, sign out)
   supa.auth.onAuthStateChange(async (event, session) => {
     if (event === 'SIGNED_IN') {
       document.getElementById('screen-profile').style.display = 'none';
@@ -3672,8 +3692,9 @@ var HSTEPS = [
     body: '<p style="font-size:14px;color:var(--text2);line-height:1.6;margin:0 0 14px;">Open from your home screen so it runs full-screen without the Safari bar.</p>' +
     hstep(1,'Tap the Share button','The box with an arrow pointing up at the bottom of Safari') +
     hstep(2,'Tap Add to Home Screen','Scroll down in the share sheet to find it') +
-    hstep(3,'Name it and tap Add','FitJournal works well as the name') +
-    hstep(4,'Always open from the home screen icon','Not Safari directly — gives you the full-screen experience') },
+    hstep(3,'Name it FIT Ignite and tap Add','') +
+    hstep(4,'Open it from the home screen icon','The first time you open it this way, you\'ll need to sign in once with your email. After that it stays logged in.') +
+    '<div style="background:var(--accent-light);border-left:3px solid var(--accent);padding:12px 14px;border-radius:0 8px 8px 0;font-size:13px;color:var(--text2);line-height:1.6;margin-top:10px;"><strong style="display:block;color:var(--text);margin-bottom:4px;">Why do I need to sign in again?</strong>iPhone home screen apps run separately from Safari and cannot share its saved login. One sign-in from the icon and you\'re set for good.</div>' },
 
   { title: 'Set Up Heart Rate',
     body: '<p style="font-size:14px;color:var(--text2);line-height:1.6;margin:0 0 14px;">Log your heart rate numbers in Progress → Measurements. No age formula is used — your zones are calculated from your actual numbers.</p>' +
