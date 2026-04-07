@@ -9,7 +9,7 @@
 <script>
 const SUPA_URL = 'https://lyksfvlgvwvudxwhkmqu.supabase.co';
 const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx5a3Nmdmxndnd2dWR4d2hrbXF1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU0OTM5NTUsImV4cCI6MjA5MTA2OTk1NX0.YifiFVos29VFRAQyBnsp4VK3AhUG0mbTEQFB6mzyYcw';
-const APP_VERSION = '1.6';
+const APP_VERSION = '1.7';
 const supa = supabase.createClient(SUPA_URL, SUPA_KEY, {
   auth: {
     autoRefreshToken: true,
@@ -1468,13 +1468,32 @@ async function sbGet(table, userId) {
 
 async function sbUpsert(table, row) {
   const { data, error } = await supa.from(table).upsert(row).select();
-  if (error) { console.error('sbUpsert', table, error); return null; }
-  return data?.[0] || null;
+  if (error) { console.error('sbUpsert', table, error); return { ok: false, error }; }
+  return { ok: true, data: data?.[0] || null };
 }
 
 async function sbDelete(table, id) {
   const { error } = await supa.from(table).delete().eq('id', id);
   if (error) { console.error('sbDelete', table, error); }
+}
+
+// Button loading state helper
+function btnLoading(selector, loadingText) {
+  const btn = typeof selector === 'string' ? document.querySelector(selector) : selector;
+  if (!btn) return () => {};
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = loadingText || 'Saving...';
+  return () => { btn.disabled = false; btn.textContent = orig; };
+}
+
+function friendlyError(err) {
+  if (!err) return 'check your connection and try again';
+  if (!navigator.onLine) return 'you appear to be offline';
+  if (err.code === '42501') return 'permission denied — try signing out and back in';
+  if (err.code === '23505') return 'a duplicate entry already exists';
+  if (err.message) return err.message;
+  return 'check your connection and try again';
 }
 
 function showSyncStatus(msg, isError) {
@@ -1754,7 +1773,7 @@ async function submitDevNote() {
   };
   const result = await sbUpsert('dev_notes', row);
   closeDev();
-  showToast(result ? 'Note submitted ✓' : 'Submit failed — check connection');
+  showToast(result.ok ? 'Note submitted ✓' : 'Submit failed — ' + friendlyError(result.error));
 }
 
 // activeScreen updated directly in switchTab below
@@ -2493,6 +2512,11 @@ async function saveWorkout() {
   if (hasCardio && !hasCardioType) { showToast('Select a cardio type'); return; }
   if (hasCardio && !hasCardioDuration) { showToast('Enter cardio duration'); return; }
 
+  // Loading state — prevent double-tap
+  const saveBtn = document.querySelector('[onclick="saveWorkout()"]');
+  const originalText = saveBtn ? saveBtn.textContent : '';
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Saving...'; }
+
   const workoutDateVal = document.getElementById('workout-date').value;
   const workoutDate = workoutDateVal || localDateStr();
 
@@ -2501,11 +2525,15 @@ async function saveWorkout() {
   if (existingOnDate && !today.editingWorkoutId) {
     const choice = confirm('You already have a workout saved for ' + workoutDate + '.\n\nOK = Add to existing\nCancel = Save as new separate workout');
     if (choice) {
-      // Merge exercises into existing
       existingOnDate.exercises = [...(existingOnDate.exercises || []), ...today.exercises.map(e => ({ name: e.name, sets: e.sets.filter(s => s.weight || s.reps || s.bodyweight) })).filter(e => e.sets.length)];
       const { error } = await supa.from('workouts').update({ data: existingOnDate }).eq('id', existingOnDate.id);
-      if (!error) { await clearDraft(); resetToday(); await loadAllData(); showToast('Added to existing workout ✓'); }
-      else showToast('Save failed — check connection');
+      if (!error) {
+        await clearDraft(); resetToday(); await loadAllData();
+        showToast('Added to existing workout ✓');
+      } else {
+        showToast('Save failed — ' + friendlyError(error));
+      }
+      if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = originalText; }
       return;
     }
   }
@@ -2536,14 +2564,17 @@ async function saveWorkout() {
   };
   if (today.editingWorkoutId) row.id = today.editingWorkoutId;
 
+  const isEditing = !!today.editingWorkoutId;
   const result = await sbUpsert('workouts', row);
-  if (result) {
+  if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = originalText; }
+
+  if (result.ok) {
     await clearDraft();
     resetToday();
     await loadAllData();
-    showToast(today.editingWorkoutId ? 'Workout updated ✓' : 'Workout saved ✓');
+    showToast(isEditing ? 'Workout updated ✓' : 'Workout saved ✓');
   } else {
-    showToast('Save failed — check connection');
+    showToast('Save failed — ' + friendlyError(result.error));
   }
 }
 
@@ -2790,12 +2821,14 @@ async function logWeight() {
   if (isNaN(weight) || weight <= 0 || weight > 999) { showToast('Enter a valid weight'); return; }
   if (!date) { showToast('Select a date'); return; }
 
+  const restore = btnLoading('[onclick="logWeight()"]', 'Saving...');
   const result = await sbUpsert('weight_logs', { user_id: currentUser.id, weight, entry_date: date });
-  if (result) {
+  restore();
+  if (result.ok) {
     document.getElementById('weight-input').value = '';
     await loadAllData();
     showToast('Weight logged ✓');
-  } else showToast('Save failed — check connection');
+  } else showToast('Save failed — ' + friendlyError(result.error));
 }
 
 
@@ -2838,8 +2871,10 @@ async function logMeasurements() {
   if (maxhr) { entry.maxhr = parseInt(maxhr); hasAny = true; }
   if (!hasAny) { showToast('Fill in at least one measurement field'); return; }
 
+  const restore = btnLoading('[onclick="logMeasurements()"]', 'Saving...');
   const result = await sbUpsert('measurements', { user_id: currentUser.id, data: entry, entry_date: date });
-  if (result) {
+  restore();
+  if (result.ok) {
     if (entry.rhr) db.latestRHR = entry.rhr;
     if (entry.maxhr) db.latestMaxHR = entry.maxhr;
     fields.forEach(f => document.getElementById('m-' + f).value = '');
@@ -2848,7 +2883,7 @@ async function logMeasurements() {
     document.getElementById('hr-zones-preview').style.display = 'none';
     await loadAllData();
     showToast('Measurements saved ✓');
-  } else showToast('Save failed — check connection');
+  } else showToast('Save failed — ' + friendlyError(result.error));
 }
 
 
@@ -2890,8 +2925,8 @@ async function handlePhotoUpload(event) {
       data: { angle, src: e.target.result },
       entry_date: date
     });
-    if (result) { await loadAllData(); showToast('Photo saved ✓'); }
-    else showToast('Save failed — check connection');
+    if (result.ok) { await loadAllData(); showToast('Photo saved ✓'); }
+    else showToast('Save failed — ' + friendlyError(result.error));
   };
   reader.readAsDataURL(file);
   event.target.value = '';
@@ -2932,7 +2967,6 @@ async function saveJournalEntry() {
   if (!date) { showToast('Select a date for this entry'); return; }
   if (!wins && !struggles && !focus) { showToast('Fill in at least one field before saving'); return; }
 
-  // Check for existing entry on same date — upsert by user+date
   const existing = db.journal.find(j => j.date === date);
   const row = {
     user_id: currentUser.id,
@@ -2941,14 +2975,16 @@ async function saveJournalEntry() {
   };
   if (existing) row.id = existing.id;
 
+  const restore = btnLoading('[onclick="saveJournalEntry()"]', 'Saving...');
   const result = await sbUpsert('journal', row);
-  if (result) {
+  restore();
+  if (result.ok) {
     document.getElementById('journal-wins').value = '';
     document.getElementById('journal-struggles').value = '';
     document.getElementById('journal-focus').value = '';
     await loadAllData();
     showToast(existing ? 'Entry updated ✓' : 'Entry saved ✓');
-  } else showToast('Save failed — check connection');
+  } else showToast('Save failed — ' + friendlyError(result.error));
 }
 
 
@@ -3472,16 +3508,26 @@ function exportToExcel() {
   const wb = { sheets: [] };
 
   // Summary sheet
-  const summaryRows = [['Date','Workout Type','Exercises','Total Sets','Total Volume (lb)','Energy (1-5)','Joints','Notes']];
+  const summaryRows = [['Date','Workout Type','Exercises','Total Sets','Total Volume (lb)','Cardio Type','Duration (min)','Distance','HR (bpm)','Energy (1-5)','Joints','Notes']];
   db.workouts.slice().sort((a,b)=>new Date(a.date)-new Date(b.date)).forEach(w => {
     const totalVol = w.exercises.reduce((sum,ex) => sum + ex.sets.filter(s=>s.weight&&s.reps).reduce((s2,s)=>s2+(parseFloat(s.weight)*parseInt(s.reps)),0), 0);
     const setCount = w.exercises.reduce((s,ex)=>s+ex.sets.filter(s=>s.weight&&s.reps).length,0);
+    // Build a readable distance/metric string per cardio type
+    let distStr = '';
+    if (w.cardio?.distance) distStr = w.cardio.distance + ' mi';
+    else if (w.cardio?.rowMeters) distStr = w.cardio.rowMeters + ' m';
+    else if (w.cardio?.stairFloors) distStr = w.cardio.stairFloors + ' floors' + (w.cardio.stairSpeed ? ' @ ' + w.cardio.stairSpeed + '/min' : '');
+    else if (w.cardio?.jacobsFeet) distStr = w.cardio.jacobsFeet + ' ft' + (w.cardio.jacobsRungs ? ' @ ' + w.cardio.jacobsRungs + ' rungs/min' : '');
     summaryRows.push([
-      new Date(w.date).toLocaleDateString('en-US'),
+      new Date(w.date + 'T12:00:00').toLocaleDateString('en-US'),
       w.type || 'Custom',
       w.exercises.map(e=>e.name).join(', '),
       setCount,
       Math.round(totalVol),
+      w.cardio?.type || '',
+      w.cardio?.duration || '',
+      distStr,
+      w.cardio?.hr || '',
       w.energy || '',
       w.soreness || '',
       w.note || ''
@@ -3619,8 +3665,8 @@ function doXLSXExport(wb) {
 
 // ── HELP GUIDE (self-contained, runs after DOM ready) ────
 var HSTEPS = [
-  { title: 'Welcome to FitJournal',
-    body: '<p style="text-align:center;font-size:40px;margin:0 0 12px;">💪</p><p style="font-size:20px;font-weight:600;color:var(--text);text-align:center;margin:0 0 10px;">Your personal fitness tracker</p><p style="font-size:14px;color:var(--text2);line-height:1.6;margin:0 0 16px;">Workout logs, body progress, journal entries, and strength trends — all in one place. No account, no internet required. Everything saves on your device.</p><div style="background:var(--warn-light);border-left:3px solid var(--warn);padding:12px 14px;border-radius:0 8px 8px 0;font-size:13px;color:var(--text2);line-height:1.6;"><strong style="display:block;color:var(--text);margin-bottom:4px;">⚠ Keep your data safe</strong>Do not use Private Browsing mode. Do not clear Safari data. Use the Export to Excel button in the Tracker tab regularly as a backup.</div>' },
+  { title: 'Welcome to FIT Ignite',
+    body: '<p style="text-align:center;font-size:40px;margin:0 0 12px;">💪</p><p style="font-size:20px;font-weight:600;color:var(--text);text-align:center;margin:0 0 10px;">Your personal fitness tracker</p><p style="font-size:14px;color:var(--text2);line-height:1.6;margin:0 0 16px;">Workout logs, body progress, journal entries, and strength trends — all in one place. Your data is saved securely to the cloud so it follows you across devices.</p><div style="background:var(--accent-light);border-left:3px solid var(--accent);padding:12px 14px;border-radius:0 8px 8px 0;font-size:13px;color:var(--text2);line-height:1.6;"><strong style="display:block;color:var(--text);margin-bottom:4px;">🔒 Your account</strong>You sign in with a magic link sent to your email — no password needed. Always use the same email address to access your data.</div>' },
 
   { title: 'Add to Home Screen',
     body: '<p style="font-size:14px;color:var(--text2);line-height:1.6;margin:0 0 14px;">Open from your home screen so it runs full-screen without the Safari bar.</p>' +
@@ -3673,7 +3719,7 @@ var HSTEPS = [
     hrow('🟢 Green row','Weight personal record') +
     hrow('🟡 Gold row','Volume personal record') +
     hrow('🔵 Blue row','Rep personal record') +
-    '</div><div style="background:var(--warn-light);border-left:3px solid var(--warn);padding:12px 14px;border-radius:0 8px 8px 0;font-size:13px;color:var(--text2);"><strong style="display:block;color:var(--text);margin-bottom:4px;">Export to Excel</strong>Tap the amber Export button at the bottom of the Tracker tab. Requires internet on first use. Export regularly as a backup.</div>' },
+    '</div><div style="background:var(--warn-light);border-left:3px solid var(--warn);padding:12px 14px;border-radius:0 8px 8px 0;font-size:13px;color:var(--text2);"><strong style="display:block;color:var(--text);margin-bottom:4px;">Export to Excel</strong>Tap the amber Export button at the bottom of the Tracker tab. Downloads a full spreadsheet with every workout, weight log, measurements, and journal entry — one sheet per exercise. A great personal backup to keep.</div>' },
 
   { title: "You're set.",
     body: '<p style="text-align:center;font-size:40px;margin:0 0 12px;">✓</p><p style="font-size:20px;font-weight:600;color:var(--text);text-align:center;margin:0 0 10px;">Ready to go</p><p style="font-size:14px;color:var(--text2);line-height:1.6;text-align:center;margin:0 0 20px;">The only metric that matters in the first 90 days is consistency.</p>' +
