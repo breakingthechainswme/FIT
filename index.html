@@ -2657,41 +2657,6 @@ function renderLogList() {
   }).join('');
 }
 
-function showWorkoutDetail(idx) {
-  const w = db.workouts[idx];
-  const date = new Date(w.date).toLocaleDateString('en-US', {weekday:'long', month:'long', day:'numeric'});
-
-  let html = `<h2>${w.type} — ${date}</h2>`;
-
-  if (w.exercises.length) {
-    html += `<div class="section-divider" style="padding:12px 0 8px;">Strength</div>`;
-    w.exercises.forEach(ex => {
-      html += `<div style="margin-bottom:12px;"><div style="font-weight:600;font-size:15px;margin-bottom:6px;">${escHtml(ex.name)}</div>`;
-      ex.sets.forEach((s,i) => {
-        html += `<div style="font-size:13px;color:var(--text2);padding:3px 0;border-bottom:1px solid var(--border);">Set ${i+1}: ${s.weight||'—'} lbs × ${s.reps||'—'} reps${s.effort ? ' · RPE '+s.effort : ''}</div>`;
-      });
-      html += `</div>`;
-    });
-  }
-
-  if (w.cardio?.type) {
-    let zoneHtml = '';
-    if (w.cardio.hr) {
-      const zi = getCardioZoneInfo(parseInt(w.cardio.hr));
-      if (zi) zoneHtml = `<span style="display:inline-block;margin-left:8px;font-size:11px;font-weight:600;padding:2px 7px;border-radius:4px;background:${zi.zone.color}22;color:${zi.zone.color};">${zi.zone.name} · ${zi.intensity}% intensity</span>`;
-    }
-    html += `<div class="section-divider" style="padding:12px 0 8px;">Cardio</div>
-    <div style="font-size:14px;color:var(--text2);">${w.cardio.type}${w.cardio.duration ? ' · '+w.cardio.duration+' min' : ''}${w.cardio.hr ? ' · '+w.cardio.hr+' bpm avg' : ''}${zoneHtml}</div>`;
-  }
-
-  if (w.note) {
-    html += `<div class="section-divider" style="padding:12px 0 8px;">Notes</div>
-    <div style="font-size:14px;color:var(--text2);line-height:1.6;">${escHtml(w.note)}</div>`;
-  }
-
-  document.getElementById('detail-modal-content').innerHTML = html;
-  openModal('detail-modal');
-}
 
 // ─── PROGRESS: WEIGHT ─────────────────────────────────────
 async function logWeight() {
