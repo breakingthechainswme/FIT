@@ -944,14 +944,17 @@ const supa = supabase.createClient(SUPA_URL, SUPA_KEY, {
   <div class="card" style="margin-top:12px;">
     <div class="card-label">Cardio (optional)</div>
     <div class="form-group" style="margin-bottom:10px;">
-      <select id="cardio-type">
+      <select id="cardio-type" onchange="updateCardioFields()">
         <option value="">Select type...</option>
         <option>Bike</option>
         <option>Treadmill</option>
         <option>Incline Walk</option>
+        <option>Stair Climber</option>
+        <option>Jacobs Ladder</option>
         <option>Row</option>
         <option>Elliptical</option>
         <option>Run</option>
+        <option>Walking</option>
         <option>Hike</option>
         <option>Horse Activity</option>
         <option>Other</option>
@@ -960,12 +963,51 @@ const supa = supabase.createClient(SUPA_URL, SUPA_KEY, {
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
       <div>
         <label style="font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:5px;">Duration (min)</label>
-        <input type="number" id="cardio-duration" placeholder="30" min="0">
+        <input type="number" id="cardio-duration" placeholder="30" min="0" oninput="calcMph()">
       </div>
       <div>
         <label style="font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:5px;">Avg HR (bpm)</label>
         <input type="number" id="cardio-hr" placeholder="120" min="0" oninput="showCardioZoneHint(this.value)">
         <div id="cardio-zone-hint" style="font-size:11px;margin-top:5px;color:var(--text3);min-height:16px;"></div>
+      </div>
+    </div>
+    <div id="cardio-distance-row" style="display:none;margin-top:8px;">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:end;">
+        <div>
+          <label style="font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:5px;">Distance (miles)</label>
+          <input type="number" id="cardio-distance" placeholder="3.1" min="0" step="0.1" oninput="calcMph()">
+        </div>
+        <div id="cardio-mph-display" style="font-size:13px;color:var(--text2);padding-bottom:10px;"></div>
+      </div>
+    </div>
+    <div id="cardio-row-row" style="display:none;margin-top:8px;">
+      <div>
+        <label style="font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:5px;">Distance (meters)</label>
+        <input type="number" id="cardio-row-meters" placeholder="2000" min="0" step="10">
+      </div>
+    </div>
+    <div id="cardio-stair-row" style="display:none;margin-top:8px;">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        <div>
+          <label style="font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:5px;">Floors Climbed</label>
+          <input type="number" id="cardio-stair-floors" placeholder="20" min="0">
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:5px;">Speed (floors/min)</label>
+          <input type="number" id="cardio-stair-speed" placeholder="3" min="0" step="0.5">
+        </div>
+      </div>
+    </div>
+    <div id="cardio-jacobs-row" style="display:none;margin-top:8px;">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        <div>
+          <label style="font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:5px;">Feet Climbed</label>
+          <input type="number" id="cardio-jacobs-feet" placeholder="500" min="0">
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:5px;">Rungs per Minute</label>
+          <input type="number" id="cardio-jacobs-rungs" placeholder="40" min="0">
+        </div>
       </div>
     </div>
   </div>
@@ -1703,20 +1745,18 @@ function closeDev() {
 async function submitDevNote() {
   const note = document.getElementById('dev-note-input').value.trim();
   if (!note) { showToast('Write something first'); return; }
+  if (!currentUser || !currentUser.id) { showToast('Not signed in — please reload'); return; }
   const row = {
     note,
     screen: activeScreen,
     app_version: APP_VERSION,
-    user_id: currentUser ? currentUser.id : null
+    user_id: currentUser.id
   };
   const result = await sbUpsert('dev_notes', row);
   closeDev();
   showToast(result ? 'Note submitted ✓' : 'Submit failed — check connection');
 }
 
-// Override switchTab to track active screen
-const _origSwitchTab2 = switchTab;
-// No — inline it instead to avoid recursion issues
 // activeScreen updated directly in switchTab below
 
 async function init() {
@@ -2221,6 +2261,10 @@ function updateExerciseSuggestions() {
   const datalist = document.getElementById('exercise-suggestions');
   let exercises = [];
 
+  // Types where history bleed-in doesn't make sense
+  const curatedOnly = ['Mobility', 'Recovery', 'Cardio'];
+  const isCuratedOnly = today.types.length && today.types.every(t => curatedOnly.includes(t));
+
   if (!today.types.length) {
     // No type selected — show all presets + history
     exercises = [...EXERCISE_PRESETS];
@@ -2241,9 +2285,13 @@ function updateExerciseSuggestions() {
     }
   }
 
-  // Also include previously logged exercise names
-  const historyNames = db.workouts.flatMap(w => w.exercises.map(e => e.name));
-  const allNames = new Set([...exercises, ...historyNames]);
+  // Only blend in history for strength/general types — not Mobility, Recovery, or Cardio
+  if (!isCuratedOnly) {
+    const historyNames = db.workouts.flatMap(w => w.exercises.map(e => e.name));
+    historyNames.forEach(n => exercises.push(n));
+  }
+
+  const allNames = new Set(exercises);
   datalist.innerHTML = [...allNames].map(n => `<option value="${escHtml(n)}">`).join('');
 }
 
@@ -2371,13 +2419,13 @@ function addSet(exId, prefill) {
     <button class="btn-icon" onclick="removeSet(${exId},${setNum-1},'${setId}')" style="font-size:13px;">✕</button>
   `;
 
-  // Restore selected effort
+  document.getElementById('sets-' + exId).appendChild(row);
+
+  // Restore selected effort AFTER appending — some browsers drop .value on detached elements
   if (prefill && prefill.effort) {
     const sel = row.querySelector('select');
     sel.value = prefill.effort;
   }
-
-  document.getElementById('sets-' + exId).appendChild(row);
 }
 
 function toggleBW(exId, setIdx, setId) {
@@ -2468,7 +2516,13 @@ async function saveWorkout() {
     cardio: {
       type: document.getElementById('cardio-type').value,
       duration: document.getElementById('cardio-duration').value,
-      hr: document.getElementById('cardio-hr').value
+      hr: document.getElementById('cardio-hr').value,
+      distance: document.getElementById('cardio-distance')?.value || '',
+      rowMeters: document.getElementById('cardio-row-meters')?.value || '',
+      stairFloors: document.getElementById('cardio-stair-floors')?.value || '',
+      stairSpeed: document.getElementById('cardio-stair-speed')?.value || '',
+      jacobsFeet: document.getElementById('cardio-jacobs-feet')?.value || '',
+      jacobsRungs: document.getElementById('cardio-jacobs-rungs')?.value || ''
     },
     energy: today.energy,
     soreness: today.soreness,
@@ -2500,6 +2554,28 @@ function resetToday() {
   document.getElementById('cardio-type').value = '';
   document.getElementById('cardio-duration').value = '';
   document.getElementById('cardio-hr').value = '';
+  const distEl = document.getElementById('cardio-distance');
+  if (distEl) distEl.value = '';
+  const distRow = document.getElementById('cardio-distance-row');
+  if (distRow) distRow.style.display = 'none';
+  const mphEl = document.getElementById('cardio-mph-display');
+  if (mphEl) mphEl.textContent = '';
+  const rowMeters = document.getElementById('cardio-row-meters');
+  if (rowMeters) rowMeters.value = '';
+  const rowRow = document.getElementById('cardio-row-row');
+  if (rowRow) rowRow.style.display = 'none';
+  const stairFloors = document.getElementById('cardio-stair-floors');
+  if (stairFloors) stairFloors.value = '';
+  const stairSpeed = document.getElementById('cardio-stair-speed');
+  if (stairSpeed) stairSpeed.value = '';
+  const stairRow = document.getElementById('cardio-stair-row');
+  if (stairRow) stairRow.style.display = 'none';
+  const jacobsFeet = document.getElementById('cardio-jacobs-feet');
+  if (jacobsFeet) jacobsFeet.value = '';
+  const jacobsRungs = document.getElementById('cardio-jacobs-rungs');
+  if (jacobsRungs) jacobsRungs.value = '';
+  const jacobsRow = document.getElementById('cardio-jacobs-row');
+  if (jacobsRow) jacobsRow.style.display = 'none';
   document.getElementById('today-note').value = '';
   document.getElementById('workout-date').value = localDateStr();
   document.getElementById('cardio-zone-hint').textContent = '';
@@ -2568,8 +2644,27 @@ function showWorkoutDetail(idx) {
       const zi = getCardioZoneInfo(parseInt(w.cardio.hr));
       if (zi && !zi.noMax) zoneHtml = `<span style="display:inline-block;margin-left:8px;font-size:11px;font-weight:600;padding:2px 7px;border-radius:4px;background:${zi.zone.color}22;color:${zi.zone.color};">${zi.zone.name} · ${zi.intensity}%</span>`;
     }
+    let extraHtml = '';
+    if (w.cardio.distance && w.cardio.duration) {
+      const mph = (parseFloat(w.cardio.distance) / (parseFloat(w.cardio.duration) / 60)).toFixed(2);
+      extraHtml = ` · ${w.cardio.distance} mi · ${mph} mph avg`;
+    } else if (w.cardio.distance) {
+      extraHtml = ` · ${w.cardio.distance} mi`;
+    } else if (w.cardio.rowMeters) {
+      extraHtml = ` · ${w.cardio.rowMeters} m`;
+    } else if (w.cardio.stairFloors || w.cardio.stairSpeed) {
+      const parts = [];
+      if (w.cardio.stairFloors) parts.push(`${w.cardio.stairFloors} floors`);
+      if (w.cardio.stairSpeed) parts.push(`${w.cardio.stairSpeed} floors/min`);
+      extraHtml = ' · ' + parts.join(' · ');
+    } else if (w.cardio.jacobsFeet || w.cardio.jacobsRungs) {
+      const parts = [];
+      if (w.cardio.jacobsFeet) parts.push(`${w.cardio.jacobsFeet} ft climbed`);
+      if (w.cardio.jacobsRungs) parts.push(`${w.cardio.jacobsRungs} rungs/min`);
+      extraHtml = ' · ' + parts.join(' · ');
+    }
     html += `<div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;padding:12px 0 8px;">Cardio</div>
-    <div style="font-size:14px;color:var(--text2);">${w.cardio.type}${w.cardio.duration ? ' · '+w.cardio.duration+' min' : ''}${w.cardio.hr ? ' · '+w.cardio.hr+' bpm avg' : ''}${zoneHtml}</div>`;
+    <div style="font-size:14px;color:var(--text2);">${w.cardio.type}${w.cardio.duration ? ' · '+w.cardio.duration+' min' : ''}${extraHtml}${w.cardio.hr ? ' · '+w.cardio.hr+' bpm avg' : ''}${zoneHtml}</div>`;
   }
 
   if (w.note) {
@@ -2617,6 +2712,25 @@ function editWorkout(workoutId) {
   if (w.cardio?.type) document.getElementById('cardio-type').value = w.cardio.type;
   if (w.cardio?.duration) document.getElementById('cardio-duration').value = w.cardio.duration;
   if (w.cardio?.hr) document.getElementById('cardio-hr').value = w.cardio.hr;
+  if (w.cardio?.distance && document.getElementById('cardio-distance')) {
+    document.getElementById('cardio-distance').value = w.cardio.distance;
+  }
+  if (w.cardio?.rowMeters && document.getElementById('cardio-row-meters')) {
+    document.getElementById('cardio-row-meters').value = w.cardio.rowMeters;
+  }
+  if (w.cardio?.stairFloors && document.getElementById('cardio-stair-floors')) {
+    document.getElementById('cardio-stair-floors').value = w.cardio.stairFloors;
+  }
+  if (w.cardio?.stairSpeed && document.getElementById('cardio-stair-speed')) {
+    document.getElementById('cardio-stair-speed').value = w.cardio.stairSpeed;
+  }
+  if (w.cardio?.jacobsFeet && document.getElementById('cardio-jacobs-feet')) {
+    document.getElementById('cardio-jacobs-feet').value = w.cardio.jacobsFeet;
+  }
+  if (w.cardio?.jacobsRungs && document.getElementById('cardio-jacobs-rungs')) {
+    document.getElementById('cardio-jacobs-rungs').value = w.cardio.jacobsRungs;
+  }
+  if (w.cardio?.type) updateCardioFields();
   if (w.note) document.getElementById('today-note').value = w.note;
   if (w.energy) selectEnergy(w.energy);
   if (w.date) document.getElementById('workout-date').value = w.date;
@@ -2944,6 +3058,63 @@ function showCardioZoneHint(val) {
     return;
   }
   hint.innerHTML = `<span style="color:${zi.zone.color};font-weight:600;">${zi.zone.name}</span> · ${zi.intensity}% of your heart rate reserve`;
+}
+
+const DISTANCE_CARDIO_TYPES = ['Walking', 'Hike', 'Run', 'Treadmill', 'Incline Walk'];
+const ROW_CARDIO_TYPES = ['Row'];
+const STAIR_CARDIO_TYPES = ['Stair Climber'];
+const JACOBS_CARDIO_TYPES = ['Jacobs Ladder'];
+
+function updateCardioFields() {
+  const type = document.getElementById('cardio-type').value;
+  const distRow = document.getElementById('cardio-distance-row');
+  const rowRow = document.getElementById('cardio-row-row');
+  const stairRow = document.getElementById('cardio-stair-row');
+  const jacobsRow = document.getElementById('cardio-jacobs-row');
+  if (!distRow || !rowRow || !stairRow || !jacobsRow) return;
+
+  distRow.style.display = DISTANCE_CARDIO_TYPES.includes(type) ? 'block' : 'none';
+  rowRow.style.display = ROW_CARDIO_TYPES.includes(type) ? 'block' : 'none';
+  stairRow.style.display = STAIR_CARDIO_TYPES.includes(type) ? 'block' : 'none';
+  jacobsRow.style.display = JACOBS_CARDIO_TYPES.includes(type) ? 'block' : 'none';
+
+  if (!DISTANCE_CARDIO_TYPES.includes(type)) {
+    const d = document.getElementById('cardio-distance');
+    if (d) d.value = '';
+    const m = document.getElementById('cardio-mph-display');
+    if (m) m.textContent = '';
+  }
+  if (!ROW_CARDIO_TYPES.includes(type)) {
+    const d = document.getElementById('cardio-row-meters');
+    if (d) d.value = '';
+  }
+  if (!STAIR_CARDIO_TYPES.includes(type)) {
+    const f = document.getElementById('cardio-stair-floors');
+    if (f) f.value = '';
+    const s = document.getElementById('cardio-stair-speed');
+    if (s) s.value = '';
+  }
+  if (!JACOBS_CARDIO_TYPES.includes(type)) {
+    const f = document.getElementById('cardio-jacobs-feet');
+    if (f) f.value = '';
+    const r = document.getElementById('cardio-jacobs-rungs');
+    if (r) r.value = '';
+  }
+  calcMph();
+}
+
+function calcMph() {
+  const type = document.getElementById('cardio-type').value;
+  const miles = parseFloat(document.getElementById('cardio-distance')?.value);
+  const mins = parseFloat(document.getElementById('cardio-duration')?.value);
+  const display = document.getElementById('cardio-mph-display');
+  if (!display) return;
+  if (!DISTANCE_CARDIO_TYPES.includes(type) || !miles || !mins || mins <= 0) {
+    display.textContent = '';
+    return;
+  }
+  const mph = (miles / (mins / 60)).toFixed(2);
+  display.innerHTML = `<span style="font-weight:600;color:var(--accent);">${mph} mph</span> avg pace`;
 }
 
 
