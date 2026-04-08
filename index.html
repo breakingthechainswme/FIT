@@ -900,10 +900,11 @@ const supa = supabase.createClient(SUPA_URL, SUPA_KEY, {
   <div id="auth-step-return" style="display:none;width:100%;max-width:320px;text-align:center;">
     <div style="font-size:48px;margin-bottom:16px;">✅</div>
     <div style="font-size:22px;font-weight:600;color:var(--text);margin-bottom:10px;">You're signed in!</div>
-    <div style="font-size:14px;color:var(--text2);margin-bottom:24px;line-height:1.6;">Now go back to your home screen and tap the <strong style="color:var(--text);">FIT Ignite</strong> icon to open the app.</div>
-    <div style="background:var(--accent-light);border-left:3px solid var(--accent);border-radius:0 8px 8px 0;padding:12px 14px;text-align:left;font-size:13px;color:var(--text2);line-height:1.5;">
-      <strong style="color:var(--text);display:block;margin-bottom:2px;">Why not here?</strong>
-      The home screen app is a separate experience from Safari. Your sign-in has been saved — just tap the icon and you'll go straight in.
+    <div style="font-size:14px;color:var(--text2);margin-bottom:24px;line-height:1.6;">Tap the button below to open FIT Ignite and go straight to your workout.</div>
+    <a id="auth-return-btn" href="https://breakingthechainswme.github.io/FIT/" style="display:block;width:100%;padding:15px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius);font-family:inherit;font-size:16px;font-weight:600;cursor:pointer;text-decoration:none;box-sizing:border-box;">Open FIT Ignite →</a>
+    <div style="margin-top:16px;background:var(--accent-light);border-left:3px solid var(--accent);border-radius:0 8px 8px 0;padding:12px 14px;text-align:left;font-size:13px;color:var(--text2);line-height:1.5;">
+      <strong style="color:var(--text);display:block;margin-bottom:2px;">Tap the button above</strong>
+      This opens the home screen app with your session. You won't need to sign in again.
     </div>
   </div>
 
@@ -1840,55 +1841,36 @@ async function init() {
   const isStandalone = window.navigator.standalone === true;
   const isSafari = !isStandalone && /Safari/.test(navigator.userAgent) && !/CriOS|FxiOS|OPiOS/.test(navigator.userAgent);
 
-  // ── SESSION BRIDGE ──────────────────────────────────────
-  // When the magic link lands in Safari, Supabase stores the session in
-  // Safari's localStorage. The PWA has its own separate localStorage.
-  // We bridge them by writing the session to a shared transfer key in Safari,
-  // then reading and importing it in the PWA on next open.
+  // ── SESSION BRIDGE (URL-based) ───────────────────────────
+  // iOS Safari and the PWA have completely separate localStorage — they cannot
+  // share data directly. The only way to pass a session between them is via URL.
+  //
+  // Flow:
+  //   1. Magic link opens in Safari → Supabase fires SIGNED_IN
+  //   2. We extract the tokens and encode them into a URL
+  //   3. Show user a button: "Open FIT Ignite" → tapping it opens the PWA with tokens in URL
+  //   4. PWA reads tokens from URL on startup → calls setSession → user is in
 
-  // If we're in the PWA — check for a bridged session from Safari
+  // PWA startup — check for token params passed via URL
   if (isStandalone) {
-    const bridge = localStorage.getItem('fitignite_session_bridge');
-    if (bridge) {
+    const params = new URLSearchParams(window.location.search);
+    const at = params.get('at');
+    const rt = params.get('rt');
+    if (at && rt) {
       try {
-        const parsed = JSON.parse(bridge);
-        // Only use if less than 5 minutes old
-        if (parsed.ts && (Date.now() - parsed.ts) < 5 * 60 * 1000) {
-          await supa.auth.setSession({
-            access_token: parsed.access_token,
-            refresh_token: parsed.refresh_token
-          });
-        }
-      } catch(e) { /* ignore bad bridge data */ }
-      localStorage.removeItem('fitignite_session_bridge'); // single use
+        await supa.auth.setSession({ access_token: at, refresh_token: rt });
+        // Clean the URL so tokens don't stay visible
+        window.history.replaceState({}, '', window.location.pathname);
+      } catch(e) { console.log('Token import error:', e); }
     }
   }
 
-  await new Promise(r => setTimeout(r, isStandalone ? 600 : 300));
+  await new Promise(r => setTimeout(r, isStandalone ? 800 : 300));
 
   const { data: { session } } = await supa.auth.getSession();
   document.getElementById('screen-loading').style.display = 'none';
 
   if (session) {
-    // If we're in Safari and came from a magic link redirect,
-    // write the session to the bridge key for the PWA to pick up
-    if (isSafari && window.location.hash.includes('access_token')) {
-      try {
-        localStorage.setItem('fitignite_session_bridge', JSON.stringify({
-          access_token: session.access_token,
-          refresh_token: session.refresh_token,
-          ts: Date.now()
-        }));
-        // Show "return to app" screen instead of loading in Safari
-        document.getElementById('screen-loading').style.display = 'none';
-        document.getElementById('screen-profile').style.display = 'flex';
-        document.getElementById('auth-step-email').style.display = 'none';
-        document.getElementById('auth-step-sent').style.display = 'none';
-        const returnDiv = document.getElementById('auth-step-return');
-        if (returnDiv) returnDiv.style.display = 'block';
-        return; // Don't load the app in Safari — user needs to go to home screen
-      } catch(e) { /* if bridge fails just load normally */ }
-    }
     await handleAuthSession(session);
   } else {
     document.getElementById('screen-profile').style.display = 'flex';
@@ -1899,17 +1881,28 @@ async function init() {
   }
 
   supa.auth.onAuthStateChange(async (event, session) => {
-    if (event === 'SIGNED_IN') {
-      // Write bridge whenever a sign-in happens in Safari
-      if (isSafari && session) {
-        try {
-          localStorage.setItem('fitignite_session_bridge', JSON.stringify({
-            access_token: session.access_token,
-            refresh_token: session.refresh_token,
-            ts: Date.now()
-          }));
-        } catch(e) {}
+    if (event === 'SIGNED_IN' && session) {
+      if (isSafari) {
+        // Build a URL that opens the PWA with tokens embedded
+        // The PWA reads these on startup and imports the session
+        const base = 'https://breakingthechainswme.github.io/FIT/';
+        const returnUrl = `${base}?at=${encodeURIComponent(session.access_token)}&rt=${encodeURIComponent(session.refresh_token)}`;
+
+        // Show return-to-app screen with a tappable link
+        document.getElementById('screen-loading').style.display = 'none';
+        document.getElementById('screen-profile').style.display = 'flex';
+        document.getElementById('auth-step-email').style.display = 'none';
+        document.getElementById('auth-step-sent').style.display = 'none';
+        document.getElementById('auth-step-name').style.display = 'none';
+        const returnDiv = document.getElementById('auth-step-return');
+        if (returnDiv) {
+          const btn = document.getElementById('auth-return-btn');
+          if (btn) btn.href = returnUrl;
+          returnDiv.style.display = 'block';
+        }
+        return;
       }
+
       document.getElementById('screen-profile').style.display = 'none';
       document.getElementById('screen-loading').style.display = 'none';
       await handleAuthSession(session);
