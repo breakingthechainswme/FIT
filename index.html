@@ -896,6 +896,17 @@ const supa = supabase.createClient(SUPA_URL, SUPA_KEY, {
     <div id="auth-name-error" style="margin-top:10px;font-size:13px;color:var(--danger);min-height:18px;"></div>
   </div>
 
+  <!-- Return to home screen app after magic link lands in Safari -->
+  <div id="auth-step-return" style="display:none;width:100%;max-width:320px;text-align:center;">
+    <div style="font-size:48px;margin-bottom:16px;">✅</div>
+    <div style="font-size:22px;font-weight:600;color:var(--text);margin-bottom:10px;">You're signed in!</div>
+    <div style="font-size:14px;color:var(--text2);margin-bottom:24px;line-height:1.6;">Now go back to your home screen and tap the <strong style="color:var(--text);">FIT Ignite</strong> icon to open the app.</div>
+    <div style="background:var(--accent-light);border-left:3px solid var(--accent);border-radius:0 8px 8px 0;padding:12px 14px;text-align:left;font-size:13px;color:var(--text2);line-height:1.5;">
+      <strong style="color:var(--text);display:block;margin-bottom:2px;">Why not here?</strong>
+      The home screen app is a separate experience from Safari. Your sign-in has been saved — just tap the icon and you'll go straight in.
+    </div>
+  </div>
+
 </div>
 
 <div id="screen-today" class="screen">
@@ -1823,25 +1834,63 @@ async function init() {
   setTodayDate();
   populateDateDefaults();
   populateExerciseSuggestions();
-  // Hide tab bar and app until auth confirmed
   document.querySelector('.tab-bar').style.display = 'none';
   document.getElementById('screen-today').style.display = 'none';
 
-  // Detect if running as iOS home screen PWA (standalone mode)
   const isStandalone = window.navigator.standalone === true;
+  const isSafari = !isStandalone && /Safari/.test(navigator.userAgent) && !/CriOS|FxiOS|OPiOS/.test(navigator.userAgent);
 
-  // Give Supabase time to detect token from URL hash (magic link redirect)
-  // PWA context needs a bit more time on iOS
+  // ── SESSION BRIDGE ──────────────────────────────────────
+  // When the magic link lands in Safari, Supabase stores the session in
+  // Safari's localStorage. The PWA has its own separate localStorage.
+  // We bridge them by writing the session to a shared transfer key in Safari,
+  // then reading and importing it in the PWA on next open.
+
+  // If we're in the PWA — check for a bridged session from Safari
+  if (isStandalone) {
+    const bridge = localStorage.getItem('fitignite_session_bridge');
+    if (bridge) {
+      try {
+        const parsed = JSON.parse(bridge);
+        // Only use if less than 5 minutes old
+        if (parsed.ts && (Date.now() - parsed.ts) < 5 * 60 * 1000) {
+          await supa.auth.setSession({
+            access_token: parsed.access_token,
+            refresh_token: parsed.refresh_token
+          });
+        }
+      } catch(e) { /* ignore bad bridge data */ }
+      localStorage.removeItem('fitignite_session_bridge'); // single use
+    }
+  }
+
   await new Promise(r => setTimeout(r, isStandalone ? 600 : 300));
 
-  // Check for existing session
   const { data: { session } } = await supa.auth.getSession();
   document.getElementById('screen-loading').style.display = 'none';
 
   if (session) {
+    // If we're in Safari and came from a magic link redirect,
+    // write the session to the bridge key for the PWA to pick up
+    if (isSafari && window.location.hash.includes('access_token')) {
+      try {
+        localStorage.setItem('fitignite_session_bridge', JSON.stringify({
+          access_token: session.access_token,
+          refresh_token: session.refresh_token,
+          ts: Date.now()
+        }));
+        // Show "return to app" screen instead of loading in Safari
+        document.getElementById('screen-loading').style.display = 'none';
+        document.getElementById('screen-profile').style.display = 'flex';
+        document.getElementById('auth-step-email').style.display = 'none';
+        document.getElementById('auth-step-sent').style.display = 'none';
+        const returnDiv = document.getElementById('auth-step-return');
+        if (returnDiv) returnDiv.style.display = 'block';
+        return; // Don't load the app in Safari — user needs to go to home screen
+      } catch(e) { /* if bridge fails just load normally */ }
+    }
     await handleAuthSession(session);
   } else {
-    // Show login screen — if PWA, add a helpful note so user knows why
     document.getElementById('screen-profile').style.display = 'flex';
     if (isStandalone) {
       const authNote = document.getElementById('auth-pwa-note');
@@ -1849,9 +1898,18 @@ async function init() {
     }
   }
 
-  // Listen for future auth changes (magic link redirects, sign out)
   supa.auth.onAuthStateChange(async (event, session) => {
     if (event === 'SIGNED_IN') {
+      // Write bridge whenever a sign-in happens in Safari
+      if (isSafari && session) {
+        try {
+          localStorage.setItem('fitignite_session_bridge', JSON.stringify({
+            access_token: session.access_token,
+            refresh_token: session.refresh_token,
+            ts: Date.now()
+          }));
+        } catch(e) {}
+      }
       document.getElementById('screen-profile').style.display = 'none';
       document.getElementById('screen-loading').style.display = 'none';
       await handleAuthSession(session);
