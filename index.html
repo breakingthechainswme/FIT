@@ -854,13 +854,13 @@ const supa = supabase.createClient(SUPA_URL, SUPA_KEY, {
 <body>
 
 <!-- LOADING SCREEN -->
-<div id="screen-loading" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;">
+<div id="screen-loading" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;position:fixed;inset:0;background:var(--bg);z-index:200;">
   <div style="font-size:40px;margin-bottom:16px;">💪</div>
   <div style="font-size:14px;color:var(--text3);">Loading...</div>
 </div>
 
 <!-- AUTH SCREEN -->
-<div id="screen-profile" style="display:none;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:40px 24px;">
+<div id="screen-profile" style="display:none;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:40px 24px;position:fixed;inset:0;background:var(--bg);z-index:200;overflow-y:auto;">
 
   <!-- Step 1: Email entry -->
   <div id="auth-step-email" style="width:100%;max-width:320px;text-align:center;">
@@ -3288,7 +3288,8 @@ function calcMph() {
 let _timerInterval = null;
 let _timerTotal = 0;
 let _timerLeft = 0;
-let _audioCtx = null; // pre-initialized on user gesture for iOS
+let _timerEndTime = 0; // wall clock end time — survives screen off
+let _audioCtx = null;
 
 function openTimerModal() {
   document.getElementById('rest-timer-modal').style.display = 'block';
@@ -3302,30 +3303,30 @@ function startTimer(seconds) {
   closeTimerModal();
   cancelTimer();
 
-  // Initialize AudioContext NOW — this is a direct user gesture tap
-  // iOS requires audio context creation during a gesture, not later
   try {
     _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    // Resume in case it was suspended (iOS requirement)
     if (_audioCtx.state === 'suspended') _audioCtx.resume();
   } catch(e) { _audioCtx = null; }
 
   _timerTotal = seconds;
-  _timerLeft = seconds;
+  _timerEndTime = Date.now() + (seconds * 1000); // absolute end time
 
   const bar = document.getElementById('rest-timer-bar');
   bar.style.display = 'block';
   updateTimerDisplay();
 
   _timerInterval = setInterval(() => {
-    _timerLeft--;
+    // Calculate remaining from wall clock — not a countdown variable
+    // This means when the screen wakes up it immediately catches up
+    const remaining = Math.max(0, Math.ceil((_timerEndTime - Date.now()) / 1000));
+    _timerLeft = remaining;
     updateTimerDisplay();
-    if (_timerLeft <= 0) {
+    if (remaining <= 0) {
       clearInterval(_timerInterval);
       _timerInterval = null;
       timerDone();
     }
-  }, 1000);
+  }, 500); // poll twice per second so it catches up quickly after screen wake
 }
 
 function updateTimerDisplay() {
@@ -3386,6 +3387,20 @@ function cancelTimer() {
   const bar = document.getElementById('rest-timer-bar');
   if (bar) bar.style.display = 'none';
 }
+
+// When screen wakes up, immediately recalculate timer from wall clock
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && _timerInterval && _timerEndTime) {
+    const remaining = Math.max(0, Math.ceil((_timerEndTime - Date.now()) / 1000));
+    _timerLeft = remaining;
+    updateTimerDisplay();
+    if (remaining <= 0) {
+      clearInterval(_timerInterval);
+      _timerInterval = null;
+      timerDone();
+    }
+  }
+});
 
 init();
 
